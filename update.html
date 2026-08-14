@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>DSH 更新</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    margin: 0; padding: 20px;
+    font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+    background: #0f1420; color: #e6e9f0;
+  }
+  h1 { font-size: 16px; margin: 0 0 14px; }
+  .row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #1e2635; font-size: 13px; }
+  .row .v { color: #9fb3e0; font-family: Consolas, monospace; }
+  .status { margin: 14px 0 10px; font-size: 13px; min-height: 18px; }
+  .status.ok { color: #4ade80; }
+  .status.warn { color: #fbbf24; }
+  .status.err { color: #f87171; }
+  .buttons { display: flex; gap: 10px; margin-bottom: 12px; }
+  button {
+    padding: 8px 18px; border: none; border-radius: 6px; cursor: pointer;
+    font-size: 13px; background: #2a3550; color: #e6e9f0;
+  }
+  button:hover { background: #34406a; }
+  button.primary { background: #4d6bfe; color: #fff; font-weight: 600; }
+  button.primary:hover { background: #5d79ff; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  #log {
+    background: #0a0e18; border: 1px solid #1e2635; border-radius: 6px;
+    padding: 10px 12px; height: 220px; overflow-y: auto;
+    font-family: Consolas, monospace; font-size: 12px; color: #a8b3c9;
+    white-space: pre-wrap; word-break: break-all;
+  }
+  #log .ok { color: #4ade80; }
+  #log .err { color: #f87171; }
+</style>
+</head>
+<body>
+  <h1>DSH 预览版更新</h1>
+  <div class="row"><span>当前版本</span><span class="v" id="cur">…</span></div>
+  <div class="row"><span>最新版本</span><span class="v" id="latest">…</span></div>
+  <div class="status" id="status">正在检查…</div>
+  <div class="buttons">
+    <button id="btnCheck">检查更新</button>
+    <button id="btnUpdate" class="primary" disabled>一键更新</button>
+  </div>
+  <div id="log"></div>
+  <script src="update.js"></script>
+</body>
+</html>
