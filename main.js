@@ -355,9 +355,19 @@ async function waitPort(port, timeoutMs, intervalMs = 500) {
 
 // 按端口杀监听进程树（PowerShell 拿 owner PID，再 taskkill /T /F）
 function killPortTree(port) {
-  const cmd = `$c = Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue; if ($c) { taskkill /pid $c.OwningProcess /T /F } else { exit 0 }`;
-  const r = spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', cmd], { windowsHide: true });
-  return r.status === 0;
+  // $c 可能是多行（多个连接），逐个 taskkill；输出结果写日志，避免"静默没杀掉还假装成功"
+  const cmd = [
+    `$c = @(Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue)`,
+    `if ($c.Count -eq 0) { Write-Output 'killed=0(no listener)'; exit 0 }`,
+    `$killed = 0`,
+    `foreach ($x in $c) { & taskkill /pid $x.OwningProcess /T /F *>&1 | ForEach-Object { Write-Output $_ }; if ($LASTEXITCODE -eq 0) { $killed++ } }`,
+    `Write-Output "killed=$killed"`,
+    `exit 0`,
+  ].join('; ');
+  const r = spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', cmd], { windowsHide: true, encoding: 'utf8' });
+  const out = `${r.stdout || ''}${r.stderr || ''}`.trim();
+  log(`killPortTree(${port}) => ${out || '(no output)'} [exit=${r.status}]`);
+  return /killed=[1-9]/.test(out);
 }
 
 function sendProgress(msg) {
