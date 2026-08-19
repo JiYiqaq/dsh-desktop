@@ -63,6 +63,7 @@ const REGISTRY_URLS = [                // 检查更新数据源：官方 registr
   'https://registry.npmjs.org/@deepseek-ai/dsh/latest',
   'https://registry.npmmirror.com/@deepseek-ai/dsh/latest',
 ];
+const UPDATE_RECHECK_MS = 30 * 60 * 1000; // 官方未推送完时的静默重查间隔（30 分钟）
 const AUTOSTART_SCRIPT = path.join(WORK_DIR, 'autostart', 'launch-dsh-web.ps1');
 
 let mainWindow = null;
@@ -229,7 +230,9 @@ function killOwnDsh() {
 // ---- 更新功能：检查 npm registry + 一键更新 ----
 let updateWin = null;
 let updateBusy = false;
-let latestVersion = null; // 最近一次检查得到的 npm 最新版
+let latestVersion = null;              // 最近一次检查得到的 npm 最新版
+let latestPublishComplete = false;     // 最新版的 dsh-* 子包是否已全部推送完成（决定红点）
+let updateRecheckTimer = null;         // 推送未完成时的静默重查定时器
 
 // 本机 DSH 版本：读 profiles Junction 上 dsh 的 package.json
 function readLocalVersion() {
@@ -255,15 +258,77 @@ async function fetchLatestVersion() {
   return null;
 }
 
+// ---- 官方推送完整性检查 ----
+// 背景：dsh 是 monorepo，新版本发布时 @deepseek-ai/dsh-* 各子包逐个上架；
+// 主包先出、子包后出，此时"检查更新"会误报有新版但实际装不上（ETARGET）。
+// 规则：只有全部子包都能查到目标版本，才算推送完成，才允许亮红点/开始更新。
+function scopedNameToPath(name) {
+  return name.replace('/', '%2f'); // '@deepseek-ai/dsh-x' -> '@deepseek-ai%2fdsh-x'
+}
+
+async function fetchJson(url, accept = null, timeoutMs = 10000) {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), timeoutMs);
+  try {
+    const headers = accept ? { accept } : {};
+    const res = await net.fetch(url, { signal: ac.signal, headers });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch { return null; } finally { clearTimeout(timer); }
+}
+
+async function verifyDshPublishComplete(version, registryBase) {
+  // 完整性核对优先官方源（镜像的 search 接口可能缺失/滞后导致误判"未推送完"）；
+  // 官方不可达时退回本次"最新版"数据源。任一源拿到子包列表即用它逐包核对。
+  const bases = [];
+  if (!/npmmirror/.test(registryBase)) bases.push(registryBase);
+  bases.push('https://registry.npmjs.org/');
+  let lastError = 'scope search failed';
+  for (const base of bases) {
+    const search = await fetchJson(`${base}-/v1/search?text=scope:deepseek-ai&size=250`);
+    if (!search || !Array.isArray(search.objects)) { lastError = `search failed (${base})`; continue; }
+    const names = search.objects
+      .map((o) => o && o.package && o.package.name)
+      .filter((n) => typeof n === 'string' && n.startsWith('@deepseek-ai/dsh'));
+    if (names.length === 0) { lastError = `no dsh packages found (${base})`; continue; }
+    const missing = [];
+    await Promise.all(names.map(async (name) => {
+      const pack = await fetchJson(`${base}${scopedNameToPath(name)}`, 'application/vnd.npm.install-v1+json');
+      const ok = pack && pack.versions && typeof pack.versions[version] === 'object';
+      if (!ok) missing.push(name);
+    }));
+    missing.sort();
+    return { complete: missing.length === 0, missing };
+  }
+  return { complete: false, missing: [], error: lastError };
+}
+
 async function runCheck() {
   const current = readLocalVersion();
   const r = await fetchLatestVersion();
   latestVersion = r ? r.version : null;
+  latestPublishComplete = false;
+  let publishInfo = null;
+  if (r && latestVersion !== current) {
+    const registryBase = r.source.replace(/@deepseek-ai\/dsh\/latest$/, '');
+    publishInfo = await verifyDshPublishComplete(latestVersion, registryBase);
+    latestPublishComplete = publishInfo.complete;
+    if (publishInfo.complete) {
+      log(`update ${latestVersion}: official publish verified complete`);
+    } else {
+      const shown = publishInfo.missing.slice(0, 8).join(', ');
+      const errSuffix = publishInfo.error ? ` (${publishInfo.error})` : '';
+      log(`update ${latestVersion} exists but official publish incomplete${errSuffix}, missing ${publishInfo.missing.length}: ${shown}${publishInfo.missing.length > 8 ? ' …' : ''} [source=${r.source}]`);
+    }
+  }
   return {
     current,
     latest: latestVersion,
     online: r !== null,
     hasUpdate: !!(r && latestVersion !== current),
+    publishComplete: latestPublishComplete,
+    missingCount: publishInfo ? publishInfo.missing.length : 0,
+    missing: publishInfo ? publishInfo.missing.slice(0, 8) : [],
     source: r ? r.source : null,
   };
 }
@@ -379,12 +444,16 @@ function registerUpdateIpc() {
     current: readLocalVersion(),
     latest: latestVersion,
     busy: updateBusy,
+    publishComplete: latestPublishComplete,
   }));
   ipcMain.handle('update:check', () => runCheck());
   ipcMain.handle('update:start', async () => {
     if (updateBusy) return { ok: false, error: '更新已在进行中' };
     if (!latestVersion || latestVersion === readLocalVersion()) {
       return { ok: false, error: '无可用更新（先点「检查更新」）' };
+    }
+    if (!latestPublishComplete) {
+      return { ok: false, error: '官方仍在发布新版本的依赖子包，请稍后再检查' };
     }
     updateBusy = true;
     try {
@@ -401,11 +470,12 @@ function registerUpdateIpc() {
   });
 }
 
-// 启动后静默检查一次，有新版用托盘气泡提醒（不弹窗口）
+// 启动后静默检查一次：有新版且官方推送完成才提醒（气泡 + 红点）
 async function silentUpdateCheck() {
+  if (updateRecheckTimer) { clearTimeout(updateRecheckTimer); updateRecheckTimer = null; }
   try {
     const r = await runCheck();
-    if (r.hasUpdate) {
+    if (r.hasUpdate && r.publishComplete) {
       log(`update available: ${r.current} -> ${r.latest}`);
       try {
         tray.displayBalloon({
@@ -417,6 +487,12 @@ async function silentUpdateCheck() {
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send('update:available', { current: r.current, latest: r.latest });
       }
+      return; // 已提醒，不再重查
+    }
+    // 有新版但官方未推送完（或离线未查明）→ 定时重查，等推送完成再亮红点
+    if ((r.hasUpdate && !r.publishComplete) || !r.online) {
+      log(`red dot held: hasUpdate=${r.hasUpdate} publishComplete=${r.publishComplete} online=${r.online}; recheck in ${UPDATE_RECHECK_MS / 60000} min`);
+      updateRecheckTimer = setTimeout(silentUpdateCheck, UPDATE_RECHECK_MS);
     }
   } catch (e) { log('silent update check failed: ' + e.message); }
 }

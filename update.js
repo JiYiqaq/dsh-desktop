@@ -41,8 +41,14 @@ async function doCheck() {
   }
   $('latest').textContent = r.latest;
   if (r.hasUpdate) {
-    setStatus(`发现新版本：${r.current} → ${r.latest}`, 'warn');
-    $('btnUpdate').disabled = false;
+    if (r.publishComplete) {
+      setStatus(`发现新版本：${r.current} → ${r.latest}`, 'warn');
+      $('btnUpdate').disabled = false;
+    } else {
+      const n = r.missingCount || 0;
+      setStatus(`新版 ${r.latest} 已发布，但官方仍在推送依赖子包（还缺 ${n} 个），暂不能更新，请稍后再检查`, 'warn');
+      $('btnUpdate').disabled = true;
+    }
   } else {
     setStatus(`已是最新版本（${r.current}）`, 'ok');
     $('btnUpdate').disabled = true;
