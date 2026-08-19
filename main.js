@@ -40,6 +40,9 @@ function findNodeExe() {
 // ---- 顶层显式默认值（可用环境变量覆盖；不依赖特定机器路径） ----
 const NODE_EXE = findNodeExe();
 const NPX_EXE = NODE_EXE.endsWith('node.exe') ? NODE_EXE.replace(/node\.exe$/, 'npx.cmd') : 'npx.cmd';
+// Windows 下 shell:true 时 Node 会把「命令 + 参数」拼成一行交给 cmd；
+// 路径含空格（C:\Program Files\...）必须加引号，否则被截断成 'C:\Program'（"不是内部或外部命令"）
+const shellQuote = (exe) => (process.platform === 'win32' && /\s/.test(exe) ? `"${exe}"` : exe);
 const DSH_HOME = process.env.DSH_HOME || path.join(os.homedir(), 'AppData', 'Local', 'DeepSeek-Harness');
 const DSH_URL = process.env.DSH_DESKTOP_URL || 'http://127.0.0.1:3080';
 const DSH_BIN = path.join(DSH_HOME, 'profiles', 'node_modules', '@deepseek-ai', 'dsh', 'lib', 'bin.js');
@@ -92,10 +95,12 @@ function probeService(timeoutMs = PROBE_TIMEOUT_MS) {
 // spawn `dsh web`：优先 $DSH_HOME 下的 bin.js，缺失时退回 npx（与 autostart 脚本一致）
 function spawnDsh() {
   const useBin = fs.existsSync(DSH_BIN);
-  const exe = useBin ? NODE_EXE : NPX_EXE;
+  // npx.cmd 需要 shell 启动（bin.js 用 node 直跑不需要）；shell 模式下路径要加引号防空格截断
+  const useShell = !useBin;
+  const exe = useShell ? shellQuote(NPX_EXE) : NODE_EXE;
   const args = useBin
     ? [DSH_BIN, 'web', '--port', portOf(DSH_URL)]
-    : ['@deepseek-ai/dsh@latest', 'web', '--port', portOf(DSH_URL)];
+    : ['--yes', '@deepseek-ai/dsh@latest', 'web', '--port', portOf(DSH_URL)];
   const env = {
     ...process.env,
     DSH_HOME,
@@ -107,7 +112,9 @@ function spawnDsh() {
     env,
     stdio: ['ignore', logFd, logFd],
     windowsHide: true,
+    shell: useShell,
   });
+  fs.closeSync(logFd); // 子进程已继承句柄副本，父进程及时释放，避免日志文件被锁
   log(`spawned dsh web (${useBin ? 'bin.js' : 'npx'}) pid=${child.pid}`);
   child.on('exit', (code) => { log(`dsh child exited code=${code}`); dshProc = null; });
   child.on('error', (err) => log(`dsh child error: ${err.message}`));
@@ -290,13 +297,14 @@ function sendProgress(msg) {
 async function healWithTempInstance(version) {
   sendProgress(`正在拉取 v${version} 并以临时端口 ${UPDATE_TEMP_PORT} 启动（切换运行镜像，可能需几十秒）…`);
   const logFd = fs.openSync(path.join(app.getPath('userData'), 'update-npx.log'), 'a');
-  spawn(NPX_EXE, ['--yes', `@deepseek-ai/dsh@${version}`, 'web', '--port', String(UPDATE_TEMP_PORT)], {
+  spawn(shellQuote(NPX_EXE), ['--yes', `@deepseek-ai/dsh@${version}`, 'web', '--port', String(UPDATE_TEMP_PORT)], {
     cwd: WORK_DIR,
     env: { ...process.env, DSH_HOME },
     stdio: ['ignore', logFd, logFd],
     windowsHide: true,
-    shell: true, // npx.cmd 需要 shell 启动
+    shell: true, // npx.cmd 需要 shell 启动；路径已用 shellQuote 加引号，防空格截断
   });
+  fs.closeSync(logFd); // 子进程已继承句柄副本，父进程及时释放，避免日志文件被锁
   const ready = await waitPort(UPDATE_TEMP_PORT, UPDATE_PORT_TIMEOUT_MS);
   if (!ready) {
     try { killPortTree(UPDATE_TEMP_PORT); } catch { /* 尽力清理 */ }
