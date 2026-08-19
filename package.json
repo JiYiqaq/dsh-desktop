@@ -1,7 +1,7 @@
 {
   "name": "dsh-desktop",
   "productName": "DeepSeek Harness",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "DeepSeek Harness 桌面壳：独立窗口 + 托盘驻留 + 服务探测自愈（Electron）",
   "main": "main.js",
   "license": "MIT",

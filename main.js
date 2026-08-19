@@ -57,7 +57,7 @@ const START_SILENT = process.argv.includes('--silent');
 
 // ---- 更新功能默认值 ----
 const UPDATE_TEMP_PORT = 3081;         // 更新时临时实例端口（heal 镜像用）
-const UPDATE_PORT_TIMEOUT_MS = 120000; // 端口监听等待上限
+const UPDATE_PORT_TIMEOUT_MS = 600000; // 冷装依赖树很大（数十个 dsh-* 包），120s 会误判失败
 const UPDATE_BALLOON_DELAY_MS = 8000;  // 启动后静默检查延迟（给网络留时间）
 const REGISTRY_URLS = [                // 检查更新数据源：官方 registry 优先，镜像兜底
   'https://registry.npmjs.org/@deepseek-ai/dsh/latest',
