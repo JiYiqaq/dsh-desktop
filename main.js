@@ -206,6 +206,13 @@ async function start() {
     mainWindow.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(ERROR_PAGE(logDir)));
     if (!START_SILENT) mainWindow.show();
   }
+  // 兜底：若 ready-to-show 因首帧失败（如 GPU 崩溃）未触发，4 秒后强制显示（仅非静默模式）
+  setTimeout(() => {
+    if (!START_SILENT && mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
+      log('ready-to-show fallback: force show');
+      mainWindow.show();
+    }
+  }, 4000);
 }
 
 // 杀掉桌面壳自己 spawn 的进程树（不碰外部服务）
